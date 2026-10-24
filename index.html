@@ -399,6 +399,7 @@ const SHELL=`<div id="app"></div>
   <div class="d-head">
     <h2>Edit page</h2>
     <button class="sbtn fill" id="pub" type="button" hidden>🌐 Publish changes</button>
+    <button class="sbtn fill" id="ghpub" type="button" hidden>🚀 Publish to GitHub</button>
     <button class="sbtn" id="dl" type="button">Download page</button>
     <button class="sbtn" id="reset" type="button">Reset</button>
     <button class="sbtn" id="lockNow" type="button">🔒 Lock</button>
@@ -727,6 +728,7 @@ function buildEditor(){
     b.append(btn,msg);d.appendChild(b);return d};
   SCHEMA.forEach(s=>{const d=el("details","ed-sec");if(s.open)d.open=true;const sm=el("summary",null,s.title);const c=el("span","count",countText(s));sm.appendChild(c);d.appendChild(sm);const b=el("div","ed-body");d.appendChild(b);fill(s,b,c);ed.appendChild(d)});
   ed.appendChild(pwSec());
+  if(!LIVE)ed.appendChild(ghSection());
 }
 function pwHash(pw){let s="sudhir-profile:"+pw,h=0x811c9dc5;for(let r=0;r<200;r++){for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}s=h.toString(16)+pw}return h.toString(16)}
 const UNLOCK="sudhir-profile-unlocked";
@@ -756,6 +758,7 @@ async function initLive(){
   try{ART=await window.claude.use("artifact")}catch(e){ART=null}
   if(!ART)return;
   LIVE=true;
+  {const s=document.getElementById("ghsec");if(s)s.remove();$("#ghpub").hidden=true}
   let u=null;try{u=await window.claude.use("user")}catch(e){}
   CAN_EDIT=u?await u.canEdit():false;
   $("#dl").hidden=true;
@@ -781,6 +784,59 @@ async function publishLive(){
   b.disabled=false;b.textContent="🌐 Publish changes";
 }
 $("#pub").onclick=publishLive;
+/* ---------- GitHub Pages publishing ---------- */
+const GHKEY="profile-github-settings";
+function ghGet(){try{return JSON.parse(localStorage.getItem(GHKEY)||"null")||{}}catch(e){return{}}}
+function ghSet(v){try{localStorage.setItem(GHKEY,JSON.stringify(v))}catch(e){}}
+function ghGuess(){const h=location.hostname;if(!h.endsWith(".github.io"))return{};const owner=h.split(".")[0];const seg=location.pathname.split("/").filter(Boolean)[0];
+  const repo=seg&&!/\.html?$/i.test(seg)?seg:`${owner}.github.io`;return{owner,repo,branch:"main",path:"index.html"}}
+function ghReady(){const g=ghGet();return !!(g.owner&&g.repo&&g.token)}
+const ON_GH=location.hostname.endsWith(".github.io");
+function ghShow(){$("#ghpub").hidden=!(ON_GH||ghReady());if(ON_GH||ghReady())$("#dl").hidden=false}
+function b64utf8(s){const bytes=new TextEncoder().encode(s);let bin="";for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(bin)}
+async function ghApi(g,method,body){
+  const url=`https://api.github.com/repos/${encodeURIComponent(g.owner)}/${encodeURIComponent(g.repo)}/contents/${g.path.split("/").map(encodeURIComponent).join("/")}`+(method==="GET"?`?ref=${encodeURIComponent(g.branch||"main")}`:"");
+  const r=await fetch(url,{method,headers:{"Accept":"application/vnd.github+json","Authorization":"Bearer "+g.token,"X-GitHub-Api-Version":"2022-11-28",...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined,cache:"no-store"});
+  let j=null;try{j=await r.json()}catch(e){}return{status:r.status,json:j};
+}
+function ghErr(st,j){if(st===401)return"GitHub didn’t accept the token. Check that you copied it fully and that it hasn’t expired.";
+  if(st===403)return"The token isn’t allowed to change this repository. Give it “Contents: Read and write” access for this repository.";
+  if(st===404)return"Repository or branch not found. Check the username, repository name and branch.";
+  if(st===409||st===422)return"GitHub reported a conflict. Wait a moment and publish again.";
+  return"GitHub returned an error ("+st+(j&&j.message?": "+j.message:"")+"). Please try again."}
+async function ghPublish(){
+  const g={...ghGuess(),...ghGet()};g.branch=g.branch||"main";g.path=g.path||"index.html";
+  if(!g.owner||!g.repo||!g.token){setStatus("Add your GitHub details in the “GitHub publishing” section first.");const d=document.getElementById("ghsec");if(d){d.open=true;d.scrollIntoView({block:"start"})}return}
+  const b=$("#ghpub");b.disabled=true;b.textContent="Publishing…";setStatus("Sending your page to GitHub…");
+  try{
+    data._saved=Date.now();try{localStorage.setItem(KEY,JSON.stringify(data))}catch(e){}
+    const cur=await ghApi(g,"GET");
+    if(cur.status!==200&&cur.status!==404){setStatus(ghErr(cur.status,cur.json))}
+    else{
+      const body={message:"Update profile page",content:b64utf8(buildHTML()),branch:g.branch};if(cur.status===200&&cur.json&&cur.json.sha)body.sha=cur.json.sha;
+      const put=await ghApi(g,"PUT",body);
+      if(put.status===200||put.status===201)setStatus("Published to GitHub. Your public page updates for everyone in 1–2 minutes (refresh to see it).");
+      else setStatus(ghErr(put.status,put.json));
+    }
+  }catch(e){setStatus("Couldn’t reach GitHub. Check your internet connection and try again.")}
+  b.disabled=false;b.textContent="🚀 Publish to GitHub";
+}
+$("#ghpub").onclick=ghPublish;
+function ghSection(){
+  const d=el("details","ed-sec");d.id="ghsec";const sm=el("summary",null,"GitHub publishing");d.appendChild(sm);const b=el("div","ed-body");
+  b.appendChild(el("p","hint","Publish this page to GitHub Pages so anyone can open it, and every change you publish is saved for everyone. Your token is stored only in this browser and is never put inside the page."));
+  const g={...ghGuess(),...ghGet()};
+  const mk=(k,l,ph,type)=>{const w=el("label","fld");w.appendChild(el("span",null,l));const i=el("input");i.type=type||"text";i.placeholder=ph||"";i.value=g[k]||(k==="branch"?"main":k==="path"?"index.html":"");i.autocomplete="off";i.spellcheck=false;
+    i.oninput=()=>{const cur=ghGet();cur[k]=i.value.trim();ghSet(cur);ghShow()};w.appendChild(i);b.appendChild(w);if(!ghGet()[k]&&i.value){const cur=ghGet();cur[k]=i.value;ghSet(cur)}return i};
+  mk("owner","GitHub username","e.g. sudhir33");mk("repo","Repository name","e.g. profile or sudhir33.github.io");mk("branch","Branch","main");mk("path","File in the repository","index.html");
+  mk("token","Personal access token","github_pat_…","password");
+  const row=el("div");row.style.cssText="display:flex;gap:8px;flex-wrap:wrap;align-items:center";
+  const test=el("button","sbtn","Test connection");test.type="button";const msg=el("span","hint");msg.style.margin="0";
+  test.onclick=async()=>{const g={...ghGuess(),...ghGet()};g.branch=g.branch||"main";g.path=g.path||"index.html";if(!g.owner||!g.repo||!g.token){msg.textContent="Fill in username, repository and token.";return}
+    msg.textContent="Checking…";try{const r=await ghApi(g,"GET");msg.textContent=r.status===200?"Connected. Ready to publish.":r.status===404?"Connected, but "+g.path+" doesn’t exist yet. Publishing will create it (if the repository and branch exist).":ghErr(r.status,r.json)}catch(e){msg.textContent="Couldn’t reach GitHub."}};
+  const forget=el("button","sbtn","Remove token from this browser");forget.type="button";forget.onclick=()=>{const cur=ghGet();delete cur.token;ghSet(cur);buildEditor();ghShow()};
+  row.append(test,forget,msg);b.appendChild(row);d.appendChild(b);return d;
+}
 $("#dl").onclick=()=>{
   data._saved=Date.now();
   const html=buildHTML();
@@ -790,6 +846,10 @@ $("#dl").onclick=()=>{
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{});
 
 applyTheme();buildEditor();render();
+if(ON_GH&&location.hash!=="#edit"&&!ghReady())$("#fab").hidden=true;
+addEventListener("hashchange",()=>{if(location.hash==="#edit"){$("#fab").hidden=false;requestEdit()}});
+if(ON_GH&&location.hash==="#edit")setTimeout(requestEdit,300);
+ghShow();
 initLive();
 </script>
 </body>
